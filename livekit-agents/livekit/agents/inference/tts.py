@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal, TypedDict, overload
 
 import aiohttp
+from pydantic import BaseModel
 from typing_extensions import NotRequired
 
 from .. import tts, utils
@@ -118,6 +119,16 @@ class FallbackModel(TypedDict):
 FallbackModelType = FallbackModel | str
 
 
+class SystemDefaultFallbackEvent(BaseModel):
+    """A system-configured fallback model was selected for synthesis."""
+
+    session_id: str
+    provider: str
+    model: str
+    voice: str
+    cause: Literal["unknown", "timeout", "canceled", "provider_error"]
+
+
 def _has_aligned_transcript(model: str, extra_kwargs: dict[str, Any]) -> bool:
     provider = model.split("/")[0]
     if provider == "cartesia":
@@ -219,7 +230,55 @@ class _TTSOptions:
     api_secret: str
     extra_kwargs: dict[str, Any]
     fallback: NotGivenOr[list[FallbackModel]]
+    disable_system_default_fallback: bool
     conn_options: NotGivenOr[APIConnectOptions]
+
+
+def _build_session_create_payload(opts: _TTSOptions) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "type": "session.create",
+        "sample_rate": str(opts.sample_rate),
+        "encoding": opts.encoding,
+        "extra": opts.extra_kwargs,
+    }
+
+    if opts.voice:
+        params["voice"] = opts.voice
+    if opts.model:
+        params["model"] = opts.model
+    if opts.language:
+        params["language"] = opts.language
+
+    if opts.fallback or opts.disable_system_default_fallback:
+        models = (
+            [
+                {
+                    "model": fallback.get("model"),
+                    "voice": fallback.get("voice"),
+                    "extra": fallback.get("extra_kwargs", {}),
+                }
+                for fallback in opts.fallback
+            ]
+            if is_given(opts.fallback)
+            else []
+        )
+        params["fallback"] = {
+            "strategy": "sequential",
+            "models": models,
+            **(
+                {"disable_system_default_fallback": True}
+                if opts.disable_system_default_fallback
+                else {}
+            ),
+        }
+
+    if opts.conn_options:
+        params["connection"] = {
+            "timeout": opts.conn_options.timeout,
+            "retries": opts.conn_options.max_retry,
+        }
+
+    return params
 
 
 @dataclass(eq=False)
@@ -228,7 +287,7 @@ class _TTSConnection:
     session_id: str | None
 
 
-class TTS(tts.TTS):
+class TTS(tts.TTS[Literal["system_default_fallback"]]):
     @overload
     def __init__(
         self,
@@ -244,6 +303,7 @@ class TTS(tts.TTS):
         http_session: aiohttp.ClientSession | None = None,
         extra_kwargs: NotGivenOr[CartesiaOptions] = NOT_GIVEN,
         fallback: NotGivenOr[list[FallbackModelType] | FallbackModelType] = NOT_GIVEN,
+        disable_system_default_fallback: bool = False,
         conn_options: NotGivenOr[APIConnectOptions] = NOT_GIVEN,
     ) -> None:
         pass
@@ -263,6 +323,7 @@ class TTS(tts.TTS):
         http_session: aiohttp.ClientSession | None = None,
         extra_kwargs: NotGivenOr[DeepgramOptions] = NOT_GIVEN,
         fallback: NotGivenOr[list[FallbackModelType] | FallbackModelType] = NOT_GIVEN,
+        disable_system_default_fallback: bool = False,
         conn_options: NotGivenOr[APIConnectOptions] = NOT_GIVEN,
     ) -> None:
         pass
@@ -282,6 +343,7 @@ class TTS(tts.TTS):
         http_session: aiohttp.ClientSession | None = None,
         extra_kwargs: NotGivenOr[RimeOptions] = NOT_GIVEN,
         fallback: NotGivenOr[list[FallbackModelType] | FallbackModelType] = NOT_GIVEN,
+        disable_system_default_fallback: bool = False,
         conn_options: NotGivenOr[APIConnectOptions] = NOT_GIVEN,
     ) -> None:
         pass
@@ -301,6 +363,7 @@ class TTS(tts.TTS):
         http_session: aiohttp.ClientSession | None = None,
         extra_kwargs: NotGivenOr[InworldOptions] = NOT_GIVEN,
         fallback: NotGivenOr[list[FallbackModelType] | FallbackModelType] = NOT_GIVEN,
+        disable_system_default_fallback: bool = False,
         conn_options: NotGivenOr[APIConnectOptions] = NOT_GIVEN,
     ) -> None:
         pass
@@ -320,6 +383,7 @@ class TTS(tts.TTS):
         http_session: aiohttp.ClientSession | None = None,
         extra_kwargs: NotGivenOr[XaiOptions] = NOT_GIVEN,
         fallback: NotGivenOr[list[FallbackModelType] | FallbackModelType] = NOT_GIVEN,
+        disable_system_default_fallback: bool = False,
         conn_options: NotGivenOr[APIConnectOptions] = NOT_GIVEN,
     ) -> None:
         pass
@@ -339,6 +403,7 @@ class TTS(tts.TTS):
         http_session: aiohttp.ClientSession | None = None,
         extra_kwargs: NotGivenOr[FishAudioOptions] = NOT_GIVEN,
         fallback: NotGivenOr[list[FallbackModelType] | FallbackModelType] = NOT_GIVEN,
+        disable_system_default_fallback: bool = False,
         conn_options: NotGivenOr[APIConnectOptions] = NOT_GIVEN,
     ) -> None:
         pass
@@ -358,6 +423,7 @@ class TTS(tts.TTS):
         http_session: aiohttp.ClientSession | None = None,
         extra_kwargs: NotGivenOr[dict[str, Any]] = NOT_GIVEN,
         fallback: NotGivenOr[list[FallbackModelType] | FallbackModelType] = NOT_GIVEN,
+        disable_system_default_fallback: bool = False,
         conn_options: NotGivenOr[APIConnectOptions] = NOT_GIVEN,
     ) -> None:
         pass
@@ -384,6 +450,7 @@ class TTS(tts.TTS):
             | FishAudioOptions
         ] = NOT_GIVEN,
         fallback: NotGivenOr[list[FallbackModelType] | FallbackModelType] = NOT_GIVEN,
+        disable_system_default_fallback: bool = False,
         conn_options: NotGivenOr[APIConnectOptions] = NOT_GIVEN,
     ) -> None:
         """Livekit Cloud Inference TTS
@@ -401,6 +468,8 @@ class TTS(tts.TTS):
             extra_kwargs (dict, optional): Extra kwargs to pass to the TTS model.
             fallback (FallbackModelType, optional): Fallback models - either a list of model names,
                 a list of FallbackModel instances.
+            disable_system_default_fallback (bool, optional): Disable system-configured fallback
+                models.
             conn_options (APIConnectOptions, optional): Connection options for request attempts.
         """
         sample_rate = sample_rate if is_given(sample_rate) else DEFAULT_SAMPLE_RATE
@@ -459,6 +528,7 @@ class TTS(tts.TTS):
             api_secret=lk_api_secret,
             extra_kwargs=resolved_extra_kwargs,
             fallback=fallback_models,
+            disable_system_default_fallback=disable_system_default_fallback,
             conn_options=conn_options if is_given(conn_options) else DEFAULT_API_CONNECT_OPTIONS,
         )
         self._session = http_session
@@ -532,35 +602,7 @@ class TTS(tts.TTS):
         except aiohttp.ClientConnectorError as e:
             raise APIConnectionError("failed to connect to LiveKit Inference TTS") from e
 
-        params: dict[str, Any] = {
-            "type": "session.create",
-            "sample_rate": str(self._opts.sample_rate),
-            "encoding": self._opts.encoding,
-            "extra": self._opts.extra_kwargs,
-        }
-
-        if self._opts.voice:
-            params["voice"] = self._opts.voice
-        if self._opts.model:
-            params["model"] = self._opts.model
-        if self._opts.language:
-            params["language"] = self._opts.language
-        if self._opts.fallback:
-            models = [
-                {
-                    "model": m.get("model"),
-                    "voice": m.get("voice"),
-                    "extra": m.get("extra_kwargs", {}),
-                }
-                for m in self._opts.fallback
-            ]
-            params["fallback"] = {"models": models}
-
-        if self._opts.conn_options:
-            params["connection"] = {
-                "timeout": self._opts.conn_options.timeout,
-                "retries": self._opts.conn_options.max_retry,
-            }
+        params = _build_session_create_payload(self._opts)
 
         try:
             payload = json.dumps(params)
@@ -725,12 +767,24 @@ class SynthesizeStream(tts.SynthesizeStream):
                     current_session_id = session_id
                     output_emitter.start_segment(segment_id=session_id)
 
-                if data.get("type") == "session.created":
+                msg_type = data.get("type")
+                if msg_type == "session.created":
                     pass
-                elif data.get("type") == "output_audio":
+                elif msg_type == "system_default_fallback":
+                    self._tts.emit(
+                        "system_default_fallback",
+                        SystemDefaultFallbackEvent(
+                            session_id=data["session_id"],
+                            provider=data["provider"],
+                            model=data["model"],
+                            voice=data["voice"],
+                            cause=data["cause"],
+                        ),
+                    )
+                elif msg_type == "output_audio":
                     b64data = base64.b64decode(data["audio"])
                     output_emitter.push(b64data)
-                elif data.get("type") == "output_alignment":
+                elif msg_type == "output_alignment":
                     aligned: list[TimedString] = []
                     if words := data.get("words"):
                         aligned = [
@@ -754,14 +808,14 @@ class SynthesizeStream(tts.SynthesizeStream):
                             if self._expressive
                             else aligned
                         )
-                elif data.get("type") == "done":
+                elif msg_type == "done":
                     if self._held_tokens:  # release an unclosed span, cue unresolved
                         output_emitter.push_timed_transcript(
                             drop_bracket_cues([], self._held_tokens, final=True)
                         )
                     output_emitter.end_input()
                     break
-                elif data.get("type") == "error":
+                elif msg_type == "error":
                     raise APIError(f"LiveKit Inference TTS returned error: {msg.data}")
 
         try:
